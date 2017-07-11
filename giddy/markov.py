@@ -198,6 +198,8 @@ class Spatial_Markov(object):
                       time period over n.
     variable_name   : string
                       name of variable.
+    categorical     : boolean
+                      True if y is categorical, False if y is not categorical (default)
 
     Attributes
     ----------
@@ -392,7 +394,7 @@ class Spatial_Markov(object):
 
     """
     def __init__(self, y, w, k=4, permutations=0, fixed=False,
-                 variable_name=None):
+                 variable_name=None, categorical=False):
 
         self.y = y
         rows, cols = y.shape
@@ -401,19 +403,29 @@ class Spatial_Markov(object):
         npa = np.array
         self.fixed = fixed
         self.variable_name = variable_name
-        if fixed:
-            yf = y.flatten()
-            yb = mc.Quantiles(yf, k=k).yb
-            yb.shape = (rows, cols)
-            classes = yb
+        self.categorical = categorical
+        if categorical:
+            print('categorical')
+            #classes = np.unique(y)
+            self.k = len(np.unique(y))
+            #classes.shape = (k, 1)
+            self.lag_spatial = ps.lag_categorical
+            classes = y
         else:
-            classes = npa([mc.Quantiles(y[:, i], k=k)
-                           .yb for i in np.arange(cols)]).transpose()
+            self.lag_spatial = ps.lag_spatial
+            if fixed:
+                yf = y.flatten()
+                yb = mc.Quantiles(yf, k=k).yb
+                yb.shape = (rows, cols)
+                classes = yb
+            else:
+                classes = npa([mc.Quantiles(y[:, i], k=k)
+                            .yb for i in np.arange(cols)]).transpose()
         classic = Markov(classes)
-        self.classes = classes
+        self.classes = classic.classes
         self.p = classic.p
         self.transitions = classic.transitions
-        T, P = self._calc(y, w, classes, k=k)
+        T, P = self._calc(y, w, classes, k=self.k)
         self.T = T
         self.P = P
 
@@ -521,20 +533,25 @@ class Spatial_Markov(object):
         return self._x2_dof
 
     def _calc(self, y, w, classes, k):
-        ly = ps.lag_spatial(w, y)
+        ly = self.lag_spatial(w, y)
         npa = np.array
-        if self.fixed:
-            l_classes = mc.Quantiles(ly.flatten(), k=k).yb
-            l_classes.shape = ly.shape
+        if self.categorical:
+            l_classes = ly
         else:
-            l_classes = npa([mc.Quantiles(
-                ly[:, i], k=k).yb for i in np.arange(self.cols)])
-            l_classes = l_classes.transpose()
+            if self.fixed:
+                l_classes = mc.Quantiles(ly.flatten(), k=k).yb
+                l_classes.shape = ly.shape
+            else:
+                l_classes = npa([mc.Quantiles(
+                    ly[:, i], k=k).yb for i in np.arange(self.cols)])
+                l_classes = l_classes.transpose()
         T = np.zeros((k, k, k))
         n, t = y.shape
+        print(T.shape)
         for t1 in range(t - 1):
             t2 = t1 + 1
             for i in range(n):
+                print(i)
                 T[l_classes[i, t1], classes[i, t1], classes[i, t2]] += 1
 
         P = np.zeros_like(T)
@@ -611,6 +628,106 @@ class Spatial_Markov(object):
             ht.summary(file_name=file_name, title=title)
         else:
             ht.summary(title=title)
+
+def _conditional_markov(y, z, k_y, k_z):
+    T = np.zeros((k_z, k_y, k_y))
+    n, t = y.shape
+    for t1 in range(t - 1):
+        t2 = t1 + 1
+        for i in range(n):
+            T[z[i, t1], y[i, t1], y[i, t2]] += 1
+
+    P = np.zeros_like(T)
+    for i, mat in enumerate(T):
+        row_sum = mat.sum(axis=1)
+        row_sum = row_sum + (row_sum == 0)
+        p_i = np.matrix(np.diag(1. / row_sum) * np.matrix(mat))
+        P[i] = p_i
+    return T, P
+
+class Geo_Markov(object):
+    def __init__(self, y, w, k=4, z=None, y_discrete=False, z_discrete=False, permutations=0):
+        if z is None:
+            z = np.copy(y)  # we will be constructing the lag of y as the condtioning variale
+            z_discrete = y_discrete
+        if not y_discrete:  # quantize y
+            y_states = ps.Quantiles(y, k=k).yb
+        else:
+            y_states = y
+        if not z_discrete:  # quantize lag of z
+            wz = ps.lag_spatial(w, z)
+            z_states = ps.Quantiles(wz, k=k).yb
+        else:
+            z_states = ps.lag_categorical(w, z)
+        self.k_y = len(np.unique(y_states))
+        self.k_z = len(np.unique(z_states))
+        T,P = self._calc(y_states, z_states)
+        self.T = T
+        self.P = P
+        self.classic = Markov(y_states)
+        self.x2 = sum([chi2(T[i], self.classic.transitions)[0] for i in range(self.k_z)])
+
+        if permutations:
+            k_z = self.k_z
+            nrp = np.random.permutation
+            n, t = y_states.shape
+            x2_r = np.zeros((permutations, 1))
+            if z_discrete:
+                def lag_function(w, z, k_z):
+                    return ps.lag_categorical(w, z)
+            else:
+                def lag_function(w, z, k_z):
+                    wz = ps.lag_spatial(w, z)
+                    return ps.Quantiles(wz, k_z).yb
+            rids = np.arange(n)
+            for perm in range(permutations):
+                rids = nrp(rids)
+                z_states_r = lag_function(w, z[rids], k_z)
+                T, P = self._calc(y_states[rids], z_states_r)
+                x2 = [chi2(T[i], self.classic.transitions)[0] for i in range(self.k_z)]
+                x2_r[perm] = sum(x2)
+            larger = (x2_r >= self.x2).sum()
+            self.x2_rpvalue = (larger + 1.0) / (permutations + 1.)
+            self.x2_realizations = x2_r
+
+
+    def _calc(self, y_states, z_states):
+        return _conditional_markov(y_states, z_states, self.k_y, self.k_z)
+
+
+class Conditional_Markov(object):
+    def __init__(self, y, z, permutations=0):
+        self.k_y = len(np.unique(y))
+        self.k_z = len(np.unique(z))
+
+        self.classic = Markov(y)
+        T, P = self._calc(y, z)
+        self.x2 = sum([chi2(T[i], self.classic.transitions)[0] for i in range(self.k_z)])
+        self.T = T
+        self.P = P
+
+        if permutations:
+            print(permutations)
+            nrp = np.random.permutation
+            counter = 0
+            x2_realizations = np.zeros((permutations, 1))
+            for perm in range(permutations):
+                T, P = self._calc(nrp(y), z)
+                x2 = [chi2(T[i], self.classic.transitions)[0] for i in range(self.k_z)]
+                x2s = sum(x2)
+                x2_realizations[perm] = x2s
+                if x2s >= self.x2:
+                    counter += 1
+            self.x2_rpvalue = (counter + 1.0) / (permutations + 1.)
+            self.x2_realizations = x2_realizations
+
+    def _calc(self, y, z):
+        return _conditional_markov(y, z, self.k_y, self.k_z)
+
+
+
+
+
 
 
 def chi2(T1, T2):
