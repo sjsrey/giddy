@@ -1,5 +1,4 @@
 from __future__ import print_function
-
 """
 Markov based methods for spatial dynamics.
 """
@@ -8,15 +7,15 @@ __author__ = "Sergio J. Rey <sjsrey@gmail.com>"
 __all__ = ["Markov", "LISA_Markov", "Spatial_Markov", "kullback",
            "prais", "homogeneity"]
 
-import numpy as np
-from .ergodic import fmpt
-from .ergodic import steady_state as STEADY_STATE
-from .components import Graph
-from scipy import stats
 from operator import gt
+import numpy as np
+from scipy import stats
 import libpysal.api as ps
 from esda.moran import Moran_Local
 import mapclassify.api as mc
+from .ergodic import fmpt
+from .ergodic import steady_state as STEADY_STATE
+from .components import Graph
 
 # TT predefine LISA transitions
 # TT[i,j] is the transition type from i to j
@@ -38,17 +37,16 @@ for i in range(1, 5):
 # significant in quadrant 3.
 
 MOVE_TYPES = {}
-c = 1
 cases = (True, False)
 sig_keys = [(i, j) for i in cases for j in cases]
 
 for i, sig_key in enumerate(sig_keys):
-    c = 1 + i * 16
+    case = 1 + i * 16
     for i in range(1, 5):
         for j in range(1, 5):
             key = (i, j, sig_key[0], sig_key[1])
             MOVE_TYPES[key] = c
-            c += 1
+            case += 1
 
 
 class Markov(object):
@@ -661,7 +659,7 @@ class Geo_Markov(object):
             z_states = ps.lag_categorical(w, z)
         self.k_y = len(np.unique(y_states))
         self.k_z = len(np.unique(z_states))
-        T,P = self._calc(y_states, z_states)
+        T, P = self._calc(y_states, z_states)
         self.T = T
         self.P = P
         self.classic = Markov(y_states)
